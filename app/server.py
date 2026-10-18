@@ -1,11 +1,12 @@
 """
 Bridge Windows system audio and a browser on the same LAN, both ways.
 
-Listen: WASAPI loopback -> aiortc -> Opus/RTP -> receiving browser.
+Listen: WASAPI loopback -> PCM/WebSocket/AudioWorklet, or compatible Opus/RTP.
 Mic (opt-in): browser getUserMedia -> aiortc -> WASAPI output device.
 
 aiohttp serves the receiver page plus two signaling endpoints (POST /offer for listen,
-POST /mic-offer for mic); aiortc owns the WebRTC sessions and (de)codes Opus.
+POST /mic-offer for mic), plus /pcm for uncompressed listening;
+aiortc owns the WebRTC sessions and (de)codes Opus.
 Both modes share ONE port. Mic mode requires a secure context (browsers only
 grant microphone access over HTTPS), so the server generates a self-signed cert
 and serves everything over HTTPS; listen mode rides the same origin. If a cert
@@ -29,17 +30,22 @@ import socket
 import ssl
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pyaudiowpatch as pyaudio
 from aiohttp import web
-from aiortc import MediaStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription, RTCRtpSender
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame
 from av.audio.resampler import AudioResampler
 from device_names import valid_id
 from web_languages import ui_payload
 from paths import WEB_DIR, DATA_DIR
+from pcm_transport import install_pcm_routes
+from audio_modes import capture_capabilities
+from ui_preferences import read_preferences
+from connection_settings import install_control_routes
 
 DEFAULT_PORT = 8787
 
@@ -85,7 +91,7 @@ class LoopbackCapture:
         self._pa = pyaudio.PyAudio()
         self.device = self._pick_device(device_index)
         self.rate = int(self.device["defaultSampleRate"])
-        # Opus is mono/stereo only; take the first 2 channels of >2ch devices.
+        # Keep mono/stereo; surround endpoints are downmixed before transport.
         self.native_channels = int(self.device["maxInputChannels"])
         self.channels = min(self.native_channels, 2)
         self.samples_per_chunk = self.rate * CHUNK_MS // 1000
@@ -159,14 +165,15 @@ class LoopbackCapture:
     def _offer_chunk(queue: asyncio.Queue, chunk: bytes) -> None:
         # Depth-1, drop-stale delivery (see class docstring — main latency knob).
         if queue.full():
+            queue.dropped_chunks = getattr(queue, 'dropped_chunks', 0) + 1
             try:
                 queue.get_nowait()
             except asyncio.QueueEmpty:
                 pass
         queue.put_nowait(chunk)
 
-    def subscribe(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+    def subscribe(self, maxsize: int = 1) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         with self._sub_lock:
             self._subscribers.add(queue)
         return queue
@@ -436,7 +443,10 @@ async def index(request: web.Request) -> web.FileResponse:
 
 
 async def ui_settings(request: web.Request) -> web.Response:
-    return web.json_response(ui_payload(request.app.get('ui_preferences_path')), headers={'Cache-Control': 'no-store'})
+    payload = ui_payload(request.app.get('ui_preferences_path'))
+    payload['audio'] = capture_capabilities(request.app.get('capture'))
+    payload.update(read_preferences(request.app.get('ui_preferences_path')))
+    return web.json_response(payload, headers={'Cache-Control': 'no-store'})
 
 
 async def receiver_asset(request: web.Request) -> web.FileResponse:
@@ -458,10 +468,12 @@ def device_kind(params: dict, user_agent: str) -> str:
 
 
 async def status(request: web.Request) -> web.Response:
-    clients = [{'kind': info['kind'], 'mode': info['mode'], 'id': info.get('id', '')}
+    clients = [dict(info, id=info.get('id', ''))
                for pc, info in request.app.get('clients', {}).items()
                if pc.connectionState == 'connected']
-    return web.json_response({'clients': clients}, headers={'Cache-Control': 'no-store'})
+    clients.extend(info for ws, info in request.app.get('pcm_clients', {}).items() if not ws.closed)
+    return web.json_response({'clients': clients, 'audio': capture_capabilities(request.app.get('capture')),
+                              'settings': read_preferences(request.app.get('ui_preferences_path'))}, headers={'Cache-Control': 'no-store'})
 
 
 async def offer(request: web.Request) -> web.Response:
@@ -473,6 +485,7 @@ async def offer(request: web.Request) -> web.Response:
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     request.app["pcs"].add(pc)
     request.app.setdefault('clients', {})[pc] = {'kind': device_kind(params, request.headers.get('User-Agent', '')), 'mode': 'listen', 'id': valid_id(params.get('deviceId'))}
+    request.app['clients'][pc].update(transport='opus', sampleRate=48000, channels=2, ready=True, sessionId=uuid.uuid4().hex)
     track = LoopbackAudioTrack(request.app["capture"])
     pc.addTrack(track)
     log.info("New peer (%d active)", len(request.app["pcs"]))
@@ -487,9 +500,13 @@ async def offer(request: web.Request) -> web.Response:
             request.app['clients'].pop(pc, None)
 
     await pc.setRemoteDescription(remote_offer)
+    for transceiver in pc.getTransceivers():
+        if transceiver.kind == 'audio':
+            transceiver.setCodecPreferences([codec for codec in RTCRtpSender.getCapabilities('audio').codecs if codec.mimeType.lower() == 'audio/opus'])
     await pc.setLocalDescription(await pc.createAnswer())
     return web.json_response(
-        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
+        headers={'X-Audio-Session': request.app['clients'][pc]['sessionId']}
     )
 
 
@@ -503,6 +520,7 @@ async def mic_offer(request: web.Request) -> web.Response:
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     request.app["pcs"].add(pc)
     request.app.setdefault('clients', {})[pc] = {'kind': device_kind(params, request.headers.get('User-Agent', '')), 'mode': 'mic', 'id': valid_id(params.get('deviceId'))}
+    request.app['clients'][pc].update(transport='opus', sampleRate=48000, ready=True, sessionId=uuid.uuid4().hex)
     playback = request.app["mic_playback"]
     log.info("New mic peer (%d active)", len(request.app["pcs"]))
 
@@ -523,9 +541,13 @@ async def mic_offer(request: web.Request) -> web.Response:
             request.app['clients'].pop(pc, None)
 
     await pc.setRemoteDescription(remote_offer)
+    for transceiver in pc.getTransceivers():
+        if transceiver.kind == 'audio':
+            transceiver.setCodecPreferences([codec for codec in RTCRtpSender.getCapabilities('audio').codecs if codec.mimeType.lower() == 'audio/opus'])
     await pc.setLocalDescription(await pc.createAnswer())
     return web.json_response(
-        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
+        headers={'X-Audio-Session': request.app['clients'][pc]['sessionId']}
     )
 
 
@@ -766,6 +788,8 @@ def main() -> None:
     tune_windows_scheduling()
     app = web.Application()
     app["pcs"] = set()
+    install_pcm_routes(app, device_kind)
+    install_control_routes(app)
     app.router.add_get("/", index)
     app.router.add_get('/status', status)
     app.router.add_get('/ui', ui_settings)

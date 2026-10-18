@@ -1,5 +1,6 @@
 """Receiver UI strings shared by all browser types."""
 from ui_languages import LANGUAGES, MESSAGES
+from audio_modes import MODE_MESSAGES
 
 KEYS = ('hero', 'intro', 'listen', 'mic', 'listen_hint', 'mic_hint', 'secure_hint',
         'ready', 'connecting', 'live_listen', 'live_mic', 'disconnected', 'blocked',
@@ -20,6 +21,34 @@ for code, row in ROWS.items():
     if len(row) != len(KEYS):
         raise ValueError(f'Web translation mismatch: {code}')
 WEB_MESSAGES = {code: dict(zip(KEYS, row)) for code, row in ROWS.items()}
+QUALITY_KEYS = ('quality', 'quality_auto', 'quality_pcm', 'quality_opus',
+                'underruns', 'fallback_notice', 'pcm_requires', 'resampled')
+QUALITY_ROWS = {
+ 'zh-CN': ['音频线路', '自动（优先无损）', '无损 PCM', '兼容 Opus', '播放缺帧次数', '已回退到有损 Opus', '无损播放需要 HTTPS 和支持 AudioWorklet 的浏览器', '播放重采样至'],
+ 'zh-TW': ['音訊線路', '自動（優先無損）', '無損 PCM', '相容 Opus', '播放缺幀次數', '已回退至有損 Opus', '無損播放需要 HTTPS 與支援 AudioWorklet 的瀏覽器', '播放重新取樣至'],
+ 'en': ['Audio transport', 'Auto (lossless first)', 'Lossless PCM', 'Compatible Opus', 'Playback underruns', 'Fell back to lossy Opus', 'Lossless requires HTTPS and an AudioWorklet-capable browser', 'Playback resampled to'],
+ 'fr': ['Transport audio', 'Auto (sans perte)', 'PCM sans perte', 'Opus compatible', 'Interruptions audio', 'Repli vers Opus avec perte', 'Le mode sans perte nécessite HTTPS et AudioWorklet', 'Lecture rééchantillonnée à'],
+ 'de': ['Audioübertragung', 'Auto (verlustfrei zuerst)', 'Verlustfreies PCM', 'Kompatibles Opus', 'Pufferunterläufe', 'Rückfall auf verlustbehaftetes Opus', 'Verlustfrei benötigt HTTPS und AudioWorklet', 'Wiedergabe neu abgetastet auf'],
+ 'es': ['Transporte de audio', 'Auto (sin pérdidas)', 'PCM sin pérdidas', 'Opus compatible', 'Interrupciones de audio', 'Cambio a Opus con pérdidas', 'Sin pérdidas requiere HTTPS y AudioWorklet', 'Reproducción remuestreada a'],
+ 'ja': ['音声転送', '自動（ロスレス優先）', 'ロスレス PCM', '互換 Opus', 'バッファ不足回数', '非可逆 Opus に切り替えました', 'ロスレスには HTTPS と AudioWorklet が必要です', '再生時の変換先'],
+ 'ko': ['오디오 전송', '자동 (무손실 우선)', '무손실 PCM', '호환 Opus', '버퍼 부족 횟수', '손실 Opus로 전환됨', '무손실에는 HTTPS와 AudioWorklet이 필요합니다', '재생 리샘플링'],
+ 'ru': ['Передача аудио', 'Авто (без потерь)', 'PCM без потерь', 'Совместимый Opus', 'Опустошения буфера', 'Переход на Opus с потерями', 'Для PCM нужны HTTPS и AudioWorklet', 'Частота воспроизведения'],
+}
+for code, row in QUALITY_ROWS.items():
+    if len(row) != len(QUALITY_KEYS):
+        raise ValueError(f'Quality translation mismatch: {code}')
+    WEB_MESSAGES[code].update(zip(QUALITY_KEYS, row))
+    WEB_MESSAGES[code].update(MODE_MESSAGES[code])
+
+SHORT_QUALITY = {
+    'zh-CN': ('自动', '无损', '兼容'), 'zh-TW': ('自動', '無損', '相容'),
+    'en': ('Auto', 'PCM', 'Opus'), 'fr': ('Auto', 'PCM', 'Opus'),
+    'de': ('Auto', 'PCM', 'Opus'), 'es': ('Auto', 'PCM', 'Opus'),
+    'ja': ('自動', '無損失', '互換'), 'ko': ('자동', '무손실', '호환'),
+    'ru': ('Авто', 'PCM', 'Opus'),
+}
+for code, short in SHORT_QUALITY.items():
+    WEB_MESSAGES[code].update(zip(('quality_short_auto', 'quality_short_pcm', 'quality_short_opus'), short))
 
 
 def ui_payload(path=None):

@@ -14,11 +14,14 @@ import psutil
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSettings, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget
 from device_names import DeviceNames, valid_id
 from ui_languages import LANGUAGES, MESSAGES, translate
-from ui_preferences import save_language
+from ui_preferences import save_language, save_quality, read_preferences
 from paths import PROJECT_ROOT, DATA_DIR
+from audio_modes import desktop_mode
+from web_languages import WEB_MESSAGES
+from quality_control import QualityControl
 
 ROOT = PROJECT_ROOT
 PYTHON = ROOT / '.venv' / 'Scripts' / 'python.exe'
@@ -43,6 +46,13 @@ class Bridge:
                 return None
             if '--port' not in args or args[args.index('--port') + 1] != str(self.port):
                 return None
+            # Windows venv launchers can host Python in a child process. Stop
+            # the verified server child, not just its launcher, on upgrades.
+            for child in reversed(process.children(recursive=True)):
+                child_args = child.cmdline()
+                if (any(os.path.normcase(os.path.abspath(arg)) == os.path.normcase(str(SERVER)) for arg in child_args[1:] if not arg.startswith('-'))
+                        and '--port' in child_args and child_args[child_args.index('--port') + 1] == str(self.port)):
+                    return child
             return process if process.is_running() else None
         except (OSError, ValueError, psutil.Error, IndexError):
             return None
@@ -56,6 +66,7 @@ class Bridge:
         url = f'https://{host}:{self.port}'
         healthy = False
         clients = None
+        audio = None
         try:
             # Only our explicitly identified local process uses this certificate.
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
@@ -64,6 +75,7 @@ class Bridge:
             try:
                 with opener.open(url + '/status', timeout=1.5) as response:
                     payload = json.load(response)
+                    audio = payload.get('audio')
                     if isinstance(payload.get('clients'), list):
                         clients = payload['clients']
                         for client in clients:
@@ -76,7 +88,7 @@ class Bridge:
                 pass  # Older bridges remain usable until the user restarts them.
         except OSError:
             pass
-        return {'running': True, 'healthy': healthy, 'url': url, 'clients': clients}
+        return {'running': True, 'healthy': healthy, 'url': url, 'clients': clients, 'audio': audio}
 
     def start(self):
         if self.process():
@@ -211,6 +223,7 @@ class AudioPanel(QWidget):
         self.custom_name = '' if testing else str(self.settings.value('custom_name', ''))[:24]
         self.rename_target = None
         self.editing_name = False
+        self.details_open = False
         self.busy = False
         self.state = {'running': False, 'url': '', 'healthy': False}
         self.drag_origin = None
@@ -218,7 +231,7 @@ class AudioPanel(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowIcon(audio_icon())
-        self.setFixedSize(344, 274)
+        self.setFixedSize(344, 330)
         outer = QVBoxLayout(self)
         self.outer_layout = outer
         outer.setContentsMargins(7, 7, 7, 7)
@@ -339,6 +352,17 @@ class AudioPanel(QWidget):
         status_row.addStretch()
         status_row.addWidget(self.mode_label)
         layout.addLayout(status_row)
+        quality_row = QHBoxLayout()
+        self.quality_label = QLabel()
+        self.quality_label.setObjectName('muted')
+        self.quality_selector = QualityControl()
+        for quality in ('auto', 'pcm', 'opus'):
+            self.quality_selector.addItem(quality, quality)
+        self.quality_selector.currentIndexChanged.connect(self.change_quality)
+        quality_row.addWidget(self.quality_label)
+        quality_row.addStretch()
+        quality_row.addWidget(self.quality_selector)
+        layout.addLayout(quality_row)
         self.power = QPushButton('启动音频传输')
         self.power.setObjectName('power')
         self.power.setFixedHeight(43)
@@ -353,6 +377,22 @@ class AudioPanel(QWidget):
         link_row.addWidget(self.address, 1)
         link_row.addWidget(self.copy)
         layout.addLayout(link_row)
+        self.details_button = QPushButton()
+        self.details_button.setObjectName('detailsToggle')
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self.toggle_details)
+        layout.addWidget(self.details_button)
+        self.details_text = QLabel()
+        self.details_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.details_text.setWordWrap(True)
+        self.details_text.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.details_scroll = QScrollArea()
+        self.details_scroll.setObjectName('connectionDetails')
+        self.details_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.details_scroll.setWidgetResizable(True)
+        self.details_scroll.setWidget(self.details_text)
+        self.details_scroll.hide()
+        layout.addWidget(self.details_scroll)
         self.setStyleSheet('''
             QWidget { font-family: "Noto Sans SC", "Microsoft YaHei UI"; font-size: 11px; color: #22252a; }
             QFrame#card { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #ffffff,stop:1 #eaf0f7); border: 1px solid #cfd8e3; border-radius: 23px; }
@@ -363,6 +403,8 @@ class AudioPanel(QWidget):
             QLabel#muted { color: #7b8591; font-size: 10px; }
             QLabel#address { color: #647286; font-size: 10px; }
             QLabel#status { color: #718092; font-size: 11px; }
+            QScrollArea#connectionDetails, QScrollArea#connectionDetails QWidget { background: #eef3f9; border-radius: 7px; }
+            QPushButton#detailsToggle { text-align: left; color: #647286; padding: 1px 0; font-size: 10px; }
             QPushButton { border: none; border-radius: 9px; padding: 4px 8px; background: transparent; }
             QPushButton:hover { background: #dfe7f0; }
             QPushButton#close { padding: 0; color: #8b5352; background: #ffcfca; border-radius: 11px; font-size: 17px; }
@@ -381,7 +423,7 @@ class AudioPanel(QWidget):
             QPushButton#edit:hover { background: #dceaff; }
         ''')
         self.base_style = self.styleSheet()
-        self.base_metrics = [(item, item.spacing()) for item in (outer, layout, header, title_row, titles, name_row, status_row, link_row)]
+        self.base_metrics = [(item, item.spacing()) for item in (outer, layout, header, title_row, titles, name_row, status_row, quality_row, link_row)]
         self.apply_scale(self.scale_percent, save=False)
         self.tray = QSystemTrayIcon(audio_icon(), self)
         self.tray.setToolTip('iPad Audio · 点击显示悬浮窗')
@@ -424,7 +466,8 @@ class AudioPanel(QWidget):
         self.scale_percent = percent
         factor = percent / 100
         px = lambda value: max(1, round(value * factor))
-        self.setFixedSize(px(344), px(274))
+        self.setFixedSize(px(344), px(500 if self.details_open else 330))
+        self.details_scroll.setFixedHeight(px(158))
         self.outer_layout.setContentsMargins(*([px(7)] * 4))
         self.card_layout.setContentsMargins(px(22), px(17), px(22), px(18))
         for layout, spacing in self.base_metrics:
@@ -435,13 +478,15 @@ class AudioPanel(QWidget):
         self.options.setFixedSize(px(24), px(23))
         self.edit_button.setFixedSize(px(24), px(26))
         self.edit_button.setIconSize(QSize(px(17), px(17)))
+        self.quality_selector.setFixedWidth(px(174))
+        self.quality_selector.setScale(factor)
         self.power.setFixedHeight(px(43))
         self.audio_badge.setPixmap(audio_icon().pixmap(px(44), px(44)))
         self.setStyleSheet(re.sub(r'(-?\d+(?:\.\d+)?)px', lambda match: f'{float(match[1]) * factor:g}px', self.base_style))
         for action in self.scale_group.actions():
             action.setChecked(action.data() == percent)
         if hasattr(self, 'tray'):
-            self.update_name()
+            self.render_state()
         if self.docked:
             self.dock_bottom_right()
         else:
@@ -542,12 +587,52 @@ class AudioPanel(QWidget):
         self.status_label.setText('●  ' + self.t('running' if healthy else ('not_ready' if running else 'stopped')))
         self.status_label.setStyleSheet(f"color: {'#259a69' if healthy else '#7b8591'}")
         self.status_label.setToolTip(self.t('health_tip') if healthy else '')
+        mode, mode_detail = desktop_mode(self.state, self.language)
+        self.mode_label.setToolTip(mode_detail)
+        self.mode_label.setFixedWidth(round(138 * self.scale_percent / 100))
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.mode_label.setText(self.mode_label.fontMetrics().elidedText(mode, Qt.TextElideMode.ElideRight, self.mode_label.width()))
+        labels = WEB_MESSAGES[self.language]
+        self.quality_label.setText(labels['quality'])
+        self.quality_selector.setAccessibleName(labels['quality'])
+        self.quality_selector.blockSignals(True)
+        for index, quality in enumerate(('auto', 'pcm', 'opus')):
+            self.quality_selector.setItemText(index, labels['quality_' + quality], labels['quality_short_' + quality])
+        preferences = read_preferences(self.preferences_path)
+        self.quality_selector.setCurrentIndex(('auto', 'pcm', 'opus').index(preferences['quality']))
+        self.quality_selector.blockSignals(False)
+        self.details_button.setText(('▾  ' if self.details_open else '▸  ') + labels['details'])
+        details = [mode_detail]
+        for client in self.state.get('clients') or []:
+            if not isinstance(client, dict):
+                continue
+            name = client.get('name') or client.get('kind', 'Browser')
+            fresh = time.time() - client.get('statsAt', 0) <= 10
+            buffer = f"{client['bufferMs']:g} ms" if fresh and 'bufferMs' in client else '—'
+            metric = 'underruns' if client.get('transport') == 'pcm' else 'sending' if client.get('mode') == 'mic' else 'loss'
+            key = 'underruns' if client.get('transport') == 'pcm' else 'packets'
+            value = str(client[key]) if fresh and key in client else '—'
+            details.append(f"{name}\n{labels['buffer']}: {buffer}\n{labels[metric]}: {value}")
+        details.append(labels['note'])
+        self.details_text.setText('\n\n'.join(details))
         text = self.t('stop' if running else 'start')
         self.power.setText(text)
         self.tray_power.setText(text)
         self.address.setText(self.state['url'] or self.t('address_hint'))
         self.copy.setEnabled(bool(self.state['url']))
         self.update_name()
+
+    def change_quality(self):
+        try:
+            save_quality(self.quality_selector.currentData(), self.preferences_path)
+        except (OSError, ValueError) as exc:
+            self.tray.showMessage('Audio Link', self.t('operation_failed') + ': ' + str(exc), QSystemTrayIcon.MessageIcon.Warning)
+        self.render_state()
+
+    def toggle_details(self, checked):
+        self.details_open = checked
+        self.details_scroll.setVisible(checked)
+        self.apply_scale(self.scale_percent, save=False)
 
     def update_name(self):
         clients = self.state.get('clients')
