@@ -101,3 +101,20 @@ The first command binds only to the sender itself. Use its actual LAN address
 for access from another device. The audio verification script briefly plays a
 test tone. `AUDIO_LINK_DATA_DIR` can redirect runtime state to another writable
 directory. Never add runtime data or private keys to a public repository.
+
+## Lossless listening
+
+Select Auto (lossless first), Lossless PCM, or Compatible Opus in Listen mode.
+Both desktop and browser controls are editable and synchronized. Selection persists on
+the PC and applies globally to updated Listen receivers; active listeners briefly reconnect.
+Expand Connection details on either end for format and receiver-reported metrics.
+Refresh receiver pages after upgrades; tap play again if browser autoplay rules require it.
+Auto visibly falls
+back to lossy Opus if PCM is unavailable or its bounded buffer overflows. Forced
+PCM reports the error instead. PCM carries captured 16-bit mono/stereo at the
+capture rate (1.536 Mb/s at 48 kHz stereo), not the untouched original source.
+Use HTTPS and an AudioWorklet-capable browser. Actual format and any playback
+resampling are shown. Underruns count cumulative playback-buffer starvation events,
+not lost network packets. Keep the page foreground; lossless transport does not
+guarantee uninterrupted playback or zero latency. Reverse microphone remains Opus.
+
