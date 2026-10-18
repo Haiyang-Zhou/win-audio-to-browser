@@ -4,6 +4,9 @@ Audio Link is a **trusted-LAN tool**, not an authenticated public streaming serv
 Do not expose its port through a router, tunnel, reverse proxy or public hosting.
 Peers that can reach the server can request audio and use microphone mode.
 Connection/device IDs are self-reported and must not be treated as trusted identity.
+Trusted LAN peers can also change the shared transport mode and submit bounded playback
+diagnostics. Control POST requests require a custom header and reject foreign browser
+Origins; this is cross-site protection, not authentication against LAN clients.
 
 HTTPS uses a locally generated self-signed certificate. Verify the server address
 yourself before accepting its browser warning. Do not install arbitrary root

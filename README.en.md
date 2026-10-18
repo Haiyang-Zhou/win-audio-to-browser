@@ -1,4 +1,6 @@
-# Audio Link
+# Audio Link V2
+
+**v2.0.0 · 2026-10-18** · [V2 release notes / 发布说明](docs/RELEASE-v2.md)
 
 Stream Windows system audio to a browser on your phone, tablet or another computer.
 An Apple-inspired desktop controller and responsive receiver UI, with no mobile app,
@@ -10,7 +12,7 @@ account or cloud server required. MIT licensed.
 
 ## Highlights
 
-- WASAPI loopback capture, WebRTC and Opus audio over your LAN.
+- WASAPI loopback capture, lossless PCM preferred, with WebRTC/Opus compatibility.
 - Floating window, taskbar minimization, tray controls, scaling and corner docking.
 - Pencil-button inline editing and per-browser device alias persistence.
 - Nine desktop/browser languages with live synchronization.
@@ -38,6 +40,28 @@ current app and permission guidance. Manual deployment remains fully supported.
 
 ## Manual quick start
 
+### Lossless and compatibility
+
+Both controller and receiver offer **Auto (lossless first), Lossless PCM, Compatible Opus**.
+Auto is the default. Either end can change the shared setting; other clients synchronize
+within roughly 2–3 seconds. Selection is persisted on the sender, separately from language.
+The setting affects all updated Listen receivers, not microphone transport. Changing it
+briefly reconnects active listeners; browser autoplay rules may require another tap.
+Both UIs show actual modes with no maximum-quality banner. Expand Connection details for
+per-device formats and receiver-reported buffer/loss/underrun metrics. Desktop data older
+than ten seconds is shown as unknown, not live. Idle, negotiating and legacy unknown
+connections are never labeled lossless. Auto tries PCM before Opus on each connection.
+Auto falls back to lossy Opus on unsupported features, connection failure or buffer
+overflow, showing the reason. Explicit PCM reports errors
+instead of silently downgrading. PCM transports captured **16-bit mono/stereo** samples
+at the capture device rate without a lossy codec: 48 kHz stereo is **1.536 Mb/s** before
+network overhead. This is not an end-to-end source bit-perfect or 24-bit Hi-Res claim:
+Windows mixing, surround downmix and receiver resampling remain outside the guarantee.
+PCM requires HTTPS/AudioWorklet; ordinary LAN HTTP can use Opus. Diagnostics show the
+actual format, playback buffer and cumulative underruns. Jitter, clock drift and screen
+locking can still interrupt playback. Reverse microphone remains Opus. Developers can
+run `node tests/test_worklet.js` for sample-processing tests.
+
 The sender requires Windows 10/11, Python 3.12 with the Windows `py` launcher,
 and an enabled playback device. Receivers need a modern WebRTC-capable browser.
 
@@ -62,7 +86,8 @@ node --check web/receiver.js
 ```
 
 Default tests do not require an audio device. Hardware tests are opt-in.
-The source archive and its SHA-256 checksum are generated under `dist/`.
+The source archive `audio-link-v2.0.0-source.zip` and checksum
+`SHA256SUMS-v2.0.0.txt` are generated under `dist/`.
 Runtime data and secrets are excluded by an explicit release allowlist.
 
 ## Limitations
