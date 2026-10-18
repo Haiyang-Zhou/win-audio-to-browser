@@ -1,0 +1,23 @@
+# Local runtime state, identities, certificates and preferences
+/data/
+.venv/
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.p12
+*.pfx
+*.pid
+*.log
+.env
+.env.*
+device-names.json
+ui-preferences.json
+test-web-preferences.json
+
+# Generated releases and tooling
+/dist/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
