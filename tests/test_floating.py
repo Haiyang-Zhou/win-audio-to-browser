@@ -1,5 +1,6 @@
 """Exercise lifecycle on a separate port, leaving the user's stream alone."""
 import socket
+from urllib.parse import urlsplit
 from floating_control import Bridge, ROOT
 from paths import DATA_DIR
 
@@ -18,6 +19,9 @@ try:
     assert bridge.start()['healthy']
     assert bridge.process().pid == pid, 'Duplicate server started'
     assert not bridge.stop()['running']
+    with socket.socket() as closed_probe:
+        closed_probe.settimeout(1)
+        assert closed_probe.connect_ex((urlsplit(state['url']).hostname, port)) != 0, 'Server child still owns the port after stop'
     assert not bridge.stop()['running']
     if original['healthy']:
         assert Bridge().status()['healthy'], 'Original service interrupted'

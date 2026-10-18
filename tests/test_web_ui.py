@@ -11,6 +11,9 @@ from ui_preferences import save_language, read_language
 from ui_languages import LANGUAGES
 from web_languages import WEB_MESSAGES, ui_payload
 from paths import TEST_OUTPUT_DIR
+from pcm_transport import install_pcm_routes
+from server import device_kind, status
+from connection_settings import install_control_routes
 
 ROOT = Path(__file__).parent
 PREVIEW_PREFERENCES = TEST_OUTPUT_DIR / 'test-web-preferences.json'
@@ -18,6 +21,9 @@ PREVIEW_PREFERENCES = TEST_OUTPUT_DIR / 'test-web-preferences.json'
 
 def make_app(path):
     app = web.Application()
+    app['clients'] = {}
+    install_pcm_routes(app, device_kind)
+    install_control_routes(app)
     app['ui_preferences_path'] = path
     app.router.add_get('/', index)
     app.router.add_get('/ui', ui_settings)
@@ -41,7 +47,26 @@ async def test_api():
                     assert fields(text) == fields(WEB_MESSAGES['en'][key])
                 assert response.headers['Cache-Control'] == 'no-store'
             assert 'Audio Link' in await (await client.get('/')).text()
-            for file in ('receiver.css', 'receiver.js'):
+            headers = {'X-Audio-Link': '1'}
+            assert (await client.post('/ui/quality', json={'quality': 'pcm'})).status == 403
+            assert (await client.post('/ui/quality', json={'quality': 'pcm'}, headers={**headers, 'Origin': 'https://foreign.invalid'})).status == 403
+            assert (await client.post('/ui/quality', json={'quality': 'invalid'}, headers=headers)).status == 400
+            for quality in ('pcm', 'opus', 'auto'):
+                response = await client.post('/ui/quality', json={'quality': quality}, headers=headers)
+                saved = await response.json()
+                current = await (await client.get('/ui')).json()
+                assert current['quality'] == quality and current['revision'] == saved['revision']
+                assert current['language'] == code
+            assert 'best-mode' not in await (await client.get('/')).text()
+            page = await (await client.get('/')).text()
+            assert 'role="radiogroup"' in page and page.count('role="radio"') == 3
+            assert '<select' not in page
+            app = client.server.app
+            app['clients']['peer'] = {'sessionId': 'known', 'transport': 'opus'}
+            response = await client.post('/diagnostics', json={'sessionId': 'known', 'bufferMs': 35, 'packets': 0}, headers=headers)
+            assert response.status == 204 and app['clients']['peer']['bufferMs'] == 35
+            assert (await client.post('/diagnostics', json={'sessionId': 'other', 'bufferMs': 35}, headers=headers)).status == 404
+            for file in ('receiver.css', 'receiver.js', 'pcm-worklet.js'):
                 response = await client.get('/' + file)
                 assert response.status == 200, (file, response.status)
                 assert 'no-cache' == response.headers['Cache-Control']
@@ -61,6 +86,7 @@ if __name__ == '__main__':
         save_language('zh-CN', PREVIEW_PREFERENCES)
         app = make_app(PREVIEW_PREFERENCES)
         app['pcs'] = set()
+        app.router.add_get('/status', status)
         app.router.add_post('/offer', offer)
         app.router.add_post('/mic-offer', mic_offer)
         app.on_startup.append(make_on_startup(None, None))

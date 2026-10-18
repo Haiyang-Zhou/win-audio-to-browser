@@ -17,10 +17,10 @@ async def check_status():
     app.router.add_get('/status', status)
     async with TestClient(TestServer(app)) as client:
         response = await client.get('/status')
-        assert (await response.json()) == {'clients': [{'kind': 'iPad', 'mode': 'listen', 'id': ''}]}
+        assert (await response.json())['clients'] == [{'kind': 'iPad', 'mode': 'listen', 'id': ''}]
         assert response.headers['Cache-Control'] == 'no-store'
         connected.connectionState = 'disconnected'
-        assert (await (await client.get('/status')).json()) == {'clients': []}
+        assert (await (await client.get('/status')).json())['clients'] == []
 
 
 assert device_kind({'deviceKind': 'iPad'}, 'Macintosh') == 'iPad'
